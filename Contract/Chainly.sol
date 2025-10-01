@@ -4,7 +4,7 @@ pragma solidity ^0.8.19;
 /**
  * @title Chainly
  * @dev A decentralized chain-of-custody tracking system for supply chain management
- * @author Chainly Team
+ * @author
  */
 contract Chainly {
     
@@ -18,6 +18,7 @@ contract Chainly {
         uint256 createdAt;
         bool isActive;
         uint256 transferCount;
+        string metadataHash; // New: optional IPFS/Arweave hash
     }
     
     // Struct to represent a transfer record
@@ -42,6 +43,7 @@ contract Chainly {
     event ItemCreated(uint256 indexed itemId, string name, address indexed creator);
     event ItemTransferred(uint256 indexed itemId, address indexed from, address indexed to, bytes32 transferHash);
     event ItemVerified(uint256 indexed itemId, address indexed verifier);
+    event ItemDeactivated(uint256 indexed itemId, address indexed deactivatedBy); // New
     
     // Modifiers
     modifier onlyItemOwner(uint256 _itemId) {
@@ -58,9 +60,14 @@ contract Chainly {
      * @dev Creates a new item in the supply chain
      * @param _name Name of the item
      * @param _description Description of the item
+     * @param _metadataHash Optional metadata hash (IPFS/Arweave/etc.)
      * @return itemId The ID of the newly created item
      */
-    function createItem(string memory _name, string memory _description) 
+    function createItem(
+        string memory _name, 
+        string memory _description, 
+        string memory _metadataHash
+    ) 
         external 
         returns (uint256 itemId) 
     {
@@ -76,7 +83,8 @@ contract Chainly {
             creator: msg.sender,
             createdAt: block.timestamp,
             isActive: true,
-            transferCount: 0
+            transferCount: 0,
+            metadataHash: _metadataHash
         });
         
         ownerItems[msg.sender].push(itemId);
@@ -101,9 +109,6 @@ contract Chainly {
     
     /**
      * @dev Transfers ownership of an item to another address
-     * @param _itemId ID of the item to transfer
-     * @param _to Address to transfer the item to
-     * @param _notes Optional notes about the transfer
      */
     function transferItem(uint256 _itemId, address _to, string memory _notes) 
         external 
@@ -144,11 +149,19 @@ contract Chainly {
     }
     
     /**
+     * @dev Deactivates an item (archived, not deleted)
+     */
+    function deactivateItem(uint256 _itemId) 
+        external 
+        onlyItemOwner(_itemId) 
+        itemExists(_itemId) 
+    {
+        items[_itemId].isActive = false;
+        emit ItemDeactivated(_itemId, msg.sender);
+    }
+    
+    /**
      * @dev Verifies the authenticity and integrity of an item's chain of custody
-     * @param _itemId ID of the item to verify
-     * @return isValid True if the item's chain of custody is valid
-     * @return transferCount Number of transfers the item has undergone
-     * @return creator Original creator of the item
      */
     function verifyItem(uint256 _itemId) 
         external 
@@ -158,7 +171,6 @@ contract Chainly {
         Item memory item = items[_itemId];
         Transfer[] memory transfers = itemTransfers[_itemId];
         
-        // Basic validation
         if (transfers.length == 0) {
             return (false, 0, address(0));
         }
@@ -167,10 +179,8 @@ contract Chainly {
         for (uint256 i = 0; i < transfers.length; i++) {
             Transfer memory transfer = transfers[i];
             
-            // Verify transfer hash
             bytes32 expectedHash;
             if (i == 0) {
-                // First transfer (creation)
                 expectedHash = keccak256(
                     abi.encodePacked(transfer.itemId, address(0), transfer.to, transfer.timestamp)
                 );
@@ -186,15 +196,11 @@ contract Chainly {
         }
         
         emit ItemVerified(_itemId, msg.sender);
-        
         return (true, item.transferCount, item.creator);
     }
     
     // View functions
     
-    /**
-     * @dev Get item details
-     */
     function getItem(uint256 _itemId) 
         external 
         view 
@@ -204,9 +210,6 @@ contract Chainly {
         return items[_itemId];
     }
     
-    /**
-     * @dev Get transfer history of an item
-     */
     function getItemHistory(uint256 _itemId) 
         external 
         view 
@@ -216,9 +219,6 @@ contract Chainly {
         return itemTransfers[_itemId];
     }
     
-    /**
-     * @dev Get all items owned by an address
-     */
     function getOwnerItems(address _owner) 
         external 
         view 
@@ -226,12 +226,18 @@ contract Chainly {
     {
         return ownerItems[_owner];
     }
+
+    /// ✅ New: Quick owner lookup
+    function getItemOwner(uint256 _itemId) 
+        external 
+        view 
+        itemExists(_itemId) 
+        returns (address) 
+    {
+        return items[_itemId].currentOwner;
+    }
     
-    // Internal functions
-    
-    /**
-     * @dev Remove item from previous owner's list
-     */
+    // Internal function
     function _removeItemFromOwner(address _owner, uint256 _itemId) internal {
         uint256[] storage items_list = ownerItems[_owner];
         for (uint256 i = 0; i < items_list.length; i++) {
